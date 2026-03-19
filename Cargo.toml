@@ -1,0 +1,20 @@
+[package]
+name        = "cddlc-ir"
+version     = "0.1.0"
+edition     = "2021"
+description = "Semantic analysis and IR lowering for cddlc"
+license     = "MIT OR Apache-2.0"
+
+[lib]
+name = "cddlc_ir"
+path = "src/lib.rs"
+
+[dependencies]
+cddlc-parser = { path = "../cddlc-parser" }
+indexmap     = "2"
+thiserror    = "1"
+smol_str     = "0.2"
+
+[dev-dependencies]
+cddlc-parser      = { path = "../cddlc-parser" }
+pretty_assertions = "1"
