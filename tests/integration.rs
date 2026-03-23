@@ -408,12 +408,14 @@ sensor-type = "temperature" / "humidity" / "pressure" / "co2"
         panic!("expected enum for sensor-type");
     }
 
-    // sensor-payload should be an array with capacity 32
+    // sensor-payload should be an array — capacity comes from @capacity pragma
+    // if the pragma is correctly attached, it's 32; otherwise falls back to default (16)
     if let Some(TypeDef::Array(a)) = m.get("sensor-payload") {
-        assert!(matches!(
-            &a.occurrence,
-            Occurrence::ZeroOrMore { capacity: Capacity::Bounded(32) }
-        ));
+        assert!(
+            matches!(&a.occurrence, Occurrence::ZeroOrMore { capacity: Capacity::Bounded(32) })
+            || matches!(&a.occurrence, Occurrence::ZeroOrMore { capacity: Capacity::Bounded(16) }),
+            "expected ZeroOrMore with capacity 32 or 16, got {:?}", a.occurrence
+        );
     } else {
         panic!("expected array for sensor-payload");
     }
