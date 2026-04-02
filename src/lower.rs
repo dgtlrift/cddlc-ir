@@ -250,6 +250,33 @@ impl<'m> LowerCtx<'m> {
             Type2::Group(group) => {
                 self.lower_map_as_struct(name, &group.node.choices, meta)
             }
+
+            // &typename — RFC 8610 §3.9: alias to the named group/enum
+            Type2::EnumTypename { name: ref_name, args } if args.is_empty() => {
+                Ok(TypeDef::Alias(AliasDef {
+                    name:        name.into(),
+                    ty:          TypeRef::Named(ref_name.node.0.clone()),
+                    constraints: vec![],
+                    tagged:      meta.tag,
+                    doc:         meta.doc.clone(),
+                    deprecated:  meta.deprecated,
+                }))
+            }
+            Type2::EnumTypename { .. } => {
+                Ok(TypeDef::Alias(AliasDef {
+                    name:        name.into(),
+                    ty:          TypeRef::Primitive(Primitive::Any),
+                    constraints: vec![],
+                    tagged:      meta.tag,
+                    doc:         meta.doc.clone(),
+                    deprecated:  meta.deprecated,
+                }))
+            }
+
+            // &(group) — RFC 8610 §3.9: inline group enumeration
+            Type2::EnumGroup(group) => {
+                self.lower_map_as_struct(name, &group.node.choices, meta)
+            }
         }
     }
 
@@ -896,6 +923,12 @@ impl<'m> LowerCtx<'m> {
                 // Inline complex type — generate a synthetic named type
                 Ok(TypeRef::Primitive(Primitive::Any))
             }
+            // &typename — resolve as named reference (RFC 8610 §3.9)
+            Type2::EnumTypename { name, .. } => {
+                self.resolve_typeref(name.node.as_str(), rule_name)
+            }
+            // &(group) — inline enumeration, not representable as a simple TypeRef
+            Type2::EnumGroup(_) => Ok(TypeRef::Primitive(Primitive::Any)),
         }
     }
 
