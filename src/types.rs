@@ -18,14 +18,19 @@ pub struct IrModule {
     /// Crate / module name (derived from the entry-point filename).
     pub name: SmolStr,
 
+    /// The schema's root type: the name of the first rule declared in the
+    /// source file, per RFC 8610's "first rule is the root" convention.
+    /// Empty if the module defines no rules.
+    pub root: SmolStr,
+
     /// Topologically sorted type definitions.
     /// Every [`TypeRef::Named`] points to a key present in this map.
     pub types: IndexMap<SmolStr, TypeDef>,
 }
 
 impl IrModule {
-    pub fn new(name: impl Into<SmolStr>) -> Self {
-        Self { name: name.into(), types: IndexMap::new() }
+    pub fn new(name: impl Into<SmolStr>, root: impl Into<SmolStr>) -> Self {
+        Self { name: name.into(), root: root.into(), types: IndexMap::new() }
     }
 
     pub fn insert(&mut self, name: SmolStr, def: TypeDef) {
@@ -144,6 +149,11 @@ pub struct EnumVariant {
     /// Synthesized name for anonymous variants (e.g. `"ok"` → `Ok`).
     pub name: SmolStr,
     pub ty:   TypeRef,
+    /// For a literal-valued variant (e.g. the `"ok"` in `"ok" / "warn"`),
+    /// the exact value it must equal — `ty` alone only narrows to the
+    /// primitive kind (e.g. any `tstr`), so this is what discriminates one
+    /// variant from another with the same underlying primitive.
+    pub constraints: Vec<Constraint>,
 }
 
 // ── Array ─────────────────────────────────────────────────────────────────────
