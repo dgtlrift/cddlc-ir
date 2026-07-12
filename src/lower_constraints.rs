@@ -14,13 +14,14 @@ use crate::types::{Constraint, LiteralValue, TypeRef};
 /// `regex_hook` is taken from the `@regex-hook` pragma on the rule, if any.
 pub fn lower_type_op(
     op:         &TypeOp,
+    base:       &Type2,
     rule_name:  &str,
     regex_hook: Option<&str>,
     warnings:   &mut Vec<IrWarning>,
 ) -> Result<Vec<Constraint>, IrError> {
     match op {
         TypeOp::Range { upper, inclusive } => {
-            lower_range(upper, *inclusive, rule_name)
+            lower_range(base, upper, *inclusive, rule_name)
         }
 
         TypeOp::Control { op, operand } => {
@@ -29,34 +30,47 @@ pub fn lower_type_op(
     }
 }
 
+/// Lower a range operator (`lo..hi` / `lo...hi`).
+///
+/// `base` is the range's lower bound (the `Type1::base` preceding the range
+/// operator). When it's a numeric literal it becomes `min`; otherwise (e.g. a
+/// typename base we can't statically resolve) `min` stays `None`, matching the
+/// existing behaviour for unresolved bounds elsewhere in this module.
 fn lower_range(
+    base:      &Type2,
     upper:     &cddlc_parser::Spanned<Type2>,
     inclusive: bool,
     rule_name: &str,
 ) -> Result<Vec<Constraint>, IrError> {
+    let min_lit = match base {
+        Type2::Value(v) => Some(lower_value(v)),
+        _ => None,
+    };
+
     // The upper bound must be a literal value for us to emit a static constraint.
     match &upper.node {
         Type2::Value(v) => {
-            let lit = lower_value(v);
-            let c = match &lit {
-                LiteralValue::Uint(n) => Constraint::ValueRangeUint {
-                    min: None,
-                    max: Some(*n),
-                    inclusive,
-                },
-                LiteralValue::Int(n) => Constraint::ValueRangeInt {
-                    min: None,
-                    max: Some(*n),
-                    inclusive,
-                },
-                LiteralValue::Float(f) => Constraint::ValueRangeF64 {
-                    min: None,
-                    max: Some(*f),
-                    inclusive,
-                },
+            let hi = lower_value(v);
+            let c = match (min_lit, hi) {
+                (Some(LiteralValue::Uint(lo)), LiteralValue::Uint(hi)) =>
+                    Constraint::ValueRangeUint { min: Some(lo), max: Some(hi), inclusive },
+                (Some(LiteralValue::Uint(lo)), LiteralValue::Int(hi)) =>
+                    Constraint::ValueRangeInt  { min: Some(lo as i64), max: Some(hi), inclusive },
+                (Some(LiteralValue::Int(lo)),  LiteralValue::Uint(hi)) =>
+                    Constraint::ValueRangeInt  { min: Some(lo), max: Some(hi as i64), inclusive },
+                (Some(LiteralValue::Int(lo)),  LiteralValue::Int(hi)) =>
+                    Constraint::ValueRangeInt  { min: Some(lo), max: Some(hi), inclusive },
+                (Some(LiteralValue::Float(lo)), LiteralValue::Float(hi)) =>
+                    Constraint::ValueRangeF64  { min: Some(lo), max: Some(hi), inclusive },
+                (None, LiteralValue::Uint(hi)) =>
+                    Constraint::ValueRangeUint { min: None, max: Some(hi), inclusive },
+                (None, LiteralValue::Int(hi)) =>
+                    Constraint::ValueRangeInt  { min: None, max: Some(hi), inclusive },
+                (None, LiteralValue::Float(hi)) =>
+                    Constraint::ValueRangeF64  { min: None, max: Some(hi), inclusive },
                 _ => return Err(IrError::BadRangeConstraint {
                     rule:   rule_name.to_owned(),
-                    reason: "range upper bound must be a numeric literal".into(),
+                    reason: "range bounds must be numeric literals of compatible type".into(),
                 }),
             };
             Ok(vec![c])

@@ -113,11 +113,17 @@ impl<'m> LowerCtx<'m> {
         // Pass 4: topological sort
         let sorted = topo_sort(&self.output)?;
 
+        let root: SmolStr = self.module.rules
+            .first()
+            .map(|sr| sr.node.name.node.0.clone())
+            .unwrap_or_default();
+
         let mut ir = IrModule::new(
             self.module.source_path
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "module".into())
+                .unwrap_or_else(|| "module".into()),
+            root,
         );
         for name in sorted {
             if let Some(def) = self.output.swap_remove(&name) {
@@ -209,13 +215,26 @@ impl<'m> LowerCtx<'m> {
                 }
             }
 
-            // Value literal used as a type → single-variant enum / alias
+            // Value literal used as a type → single-variant enum / alias,
+            // or (with a chained range/control op) a constrained alias, e.g.
+            // `byte = 0..255`.
             Type2::Value(v) => {
                 let lit = lower_value(v);
+                let mut constraints = Vec::new();
+                if t1.ops.is_empty() {
+                    constraints.push(Constraint::Eq(lit.clone()));
+                } else {
+                    for op in &t1.ops {
+                        let cs = lower_type_op(
+                            op, &t1.base.node, name, meta.regex_hook.as_deref(), &mut self.warnings,
+                        )?;
+                        constraints.extend(cs);
+                    }
+                }
                 let def = AliasDef {
                     name:        name.into(),
                     ty:          literal_to_typeref(&lit),
-                    constraints: vec![Constraint::Eq(lit)],
+                    constraints,
                     tagged:      meta.tag,
                     doc:         meta.doc.clone(),
                     deprecated:  meta.deprecated,
@@ -291,8 +310,8 @@ impl<'m> LowerCtx<'m> {
         let mut variants = Vec::new();
         for (i, choice) in ty.choices.iter().enumerate() {
             let t2 = &choice.node.base.node;
-            let (var_name, type_ref) = self.classify_enum_variant(t2, i, name)?;
-            variants.push(EnumVariant { name: var_name, ty: type_ref });
+            let (var_name, type_ref, constraints) = self.classify_enum_variant(t2, i, name)?;
+            variants.push(EnumVariant { name: var_name, ty: type_ref, constraints });
         }
         Ok(TypeDef::Enum(EnumDef {
             name:       name.into(),
@@ -308,26 +327,29 @@ impl<'m> LowerCtx<'m> {
         t2:        &Type2,
         index:     usize,
         rule_name: &str,
-    ) -> Result<(SmolStr, TypeRef), IrError> {
+    ) -> Result<(SmolStr, TypeRef, Vec<Constraint>), IrError> {
         match t2 {
             Type2::Value(Value::Text(s)) => {
                 let var_name = pascal_case(s);
-                Ok((var_name.into(), TypeRef::Primitive(Primitive::Tstr)))
+                let lit = LiteralValue::Text(s.clone());
+                Ok((var_name.into(), TypeRef::Primitive(Primitive::Tstr), vec![Constraint::Eq(lit)]))
             }
             Type2::Value(Value::Uint(n)) => {
-                Ok((format!("Variant{n}").into(), TypeRef::Primitive(Primitive::Uint)))
+                let lit = LiteralValue::Uint(*n);
+                Ok((format!("Variant{n}").into(), TypeRef::Primitive(Primitive::Uint), vec![Constraint::Eq(lit)]))
             }
             Type2::Value(Value::Int(n)) => {
-                Ok((format!("Variant{n}").into(), TypeRef::Primitive(Primitive::Int)))
+                let lit = LiteralValue::Int(*n);
+                Ok((format!("Variant{n}").into(), TypeRef::Primitive(Primitive::Int), vec![Constraint::Eq(lit)]))
             }
             Type2::Typename { name, .. } => {
                 let n = name.node.as_str();
                 let tr = self.resolve_typeref(n, rule_name)?;
-                Ok((pascal_case(n).into(), tr))
+                Ok((pascal_case(n).into(), tr, vec![]))
             }
             _ => {
                 Ok((format!("Variant{index}").into(),
-                    TypeRef::Primitive(Primitive::Any)))
+                    TypeRef::Primitive(Primitive::Any), vec![]))
             }
         }
     }
@@ -525,7 +547,7 @@ impl<'m> LowerCtx<'m> {
         let mut constraints: Vec<Constraint> = Vec::new();
         for op in &t1.ops {
             let cs = lower_type_op(
-                op, name, meta.regex_hook.as_deref(), &mut self.warnings,
+                op, &t1.base.node, name, meta.regex_hook.as_deref(), &mut self.warnings,
             )?;
             constraints.extend(cs);
         }
@@ -783,8 +805,8 @@ impl<'m> LowerCtx<'m> {
 
         match self.output.get_mut(name) {
             Some(TypeDef::Enum(e)) => {
-                for (vname, vty) in new_variants {
-                    e.variants.push(EnumVariant { name: vname, ty: vty });
+                for (vname, vty, vcs) in new_variants {
+                    e.variants.push(EnumVariant { name: vname, ty: vty, constraints: vcs });
                 }
                 Ok(())
             }
@@ -795,7 +817,7 @@ impl<'m> LowerCtx<'m> {
             None => {
                 // Base rule not yet defined — create it as an enum
                 let variants = new_variants.into_iter()
-                    .map(|(n, t)| EnumVariant { name: n, ty: t })
+                    .map(|(n, t, cs)| EnumVariant { name: n, ty: t, constraints: cs })
                     .collect();
                 self.output.insert(name.into(), TypeDef::Enum(EnumDef {
                     name:       name.into(),
@@ -877,7 +899,7 @@ impl<'m> LowerCtx<'m> {
 
         let mut constraints = Vec::new();
         for op in &t1.ops {
-            let cs = lower_type_op(op, rule_name, None, &mut self.warnings)?;
+            let cs = lower_type_op(op, &t1.base.node, rule_name, None, &mut self.warnings)?;
             constraints.extend(cs);
         }
 
