@@ -15,9 +15,30 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    # This crate is developed as a git submodule of dgtlrift/cddlc and has
+    # path dependencies on sibling crates (e.g. `{ path = "../cddlc-parser" }`),
+    # so it can't build standalone from a single-repo checkout. Instead, check
+    # out the parent workspace (with all submodules) and swap this one
+    # submodule to the commit that triggered this run, then build/test just
+    # this package from within that workspace.
     steps:
-    - uses: actions/checkout@v4
+    - name: Check out parent workspace
+      uses: actions/checkout@v4
+      with:
+        repository: dgtlrift/cddlc
+        submodules: recursive
+        path: workspace
+
+    - name: Point cddlc-ir at this commit
+      working-directory: workspace/crates/cddlc-ir
+      run: |
+        git fetch --depth=1 origin ${{ github.sha }}
+        git checkout ${{ github.sha }}
+
     - name: Build
-      run: cargo build --verbose
+      working-directory: workspace
+      run: cargo build -p cddlc-ir --verbose
+
     - name: Run tests
-      run: cargo test --verbose
+      working-directory: workspace
+      run: cargo test -p cddlc-ir --verbose
