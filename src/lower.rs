@@ -432,8 +432,8 @@ impl<'m> LowerCtx<'m> {
                     _ => FieldKey::Text(field_name.clone()),
                 };
 
-                let (ty, constraints) = self.lower_type_to_ref(
-                    &value.node, rule_name
+                let (ty, constraints) = self.lower_field_type(
+                    &value.node, rule_name, &field_name,
                 )?;
 
                 Ok(FieldDef {
@@ -658,7 +658,7 @@ impl<'m> LowerCtx<'m> {
 
                 // Substitute type parameters
                 let subst_type = self.substitute_type(&value.node, subst);
-                let (ty, constraints) = self.lower_type_to_ref(&subst_type, rule_name)?;
+                let (ty, constraints) = self.lower_field_type(&subst_type, rule_name, &field_name)?;
 
                 Ok(FieldDef {
                     name: field_name, key: field_key, ty,
@@ -880,6 +880,48 @@ impl<'m> LowerCtx<'m> {
         })
     }
 
+    /// Lower a struct field's value type. An inline choice made only of literals
+    /// (`reason: "until" / "stopped"`) becomes a synthesized named enum
+    /// (`<rule>-<field>`), so the allowed values survive lowering instead of
+    /// collapsing into `TypeRef::Choice` of bare primitives.
+    fn lower_field_type(
+        &mut self,
+        ty:         &Type,
+        rule_name:  &str,
+        field_name: &str,
+    ) -> Result<(TypeRef, Vec<Constraint>), IrError> {
+        let all_literals = ty.choices.len() > 1
+            && ty.choices.iter().all(|c| {
+                c.node.ops.is_empty()
+                    && matches!(
+                        c.node.base.node,
+                        Type2::Value(Value::Text(_) | Value::Uint(_) | Value::Int(_))
+                    )
+            });
+        if !all_literals {
+            return self.lower_type_to_ref(ty, rule_name);
+        }
+        let mut name: SmolStr = format!("{rule_name}-{field_name}").into();
+        while self.output.contains_key(&name) || self.known_rules.contains(&name) {
+            name = format!("{name}-choice").into();
+        }
+        let mut variants = Vec::new();
+        for (i, choice) in ty.choices.iter().enumerate() {
+            let (var_name, type_ref, constraints) =
+                self.classify_enum_variant(&choice.node.base.node, i, &name)?;
+            variants.push(EnumVariant { name: var_name, ty: type_ref, constraints });
+        }
+        self.known_rules.insert(name.clone());
+        self.output.insert(name.clone(), TypeDef::Enum(EnumDef {
+            name:       name.clone(),
+            variants,
+            tagged:     None,
+            doc:        None,
+            deprecated: false,
+        }));
+        Ok((TypeRef::Named(name), vec![]))
+    }
+
     /// Lower a full `Type` expression to a single TypeRef + constraints.
     fn lower_type_to_ref(
         &mut self,
@@ -898,6 +940,13 @@ impl<'m> LowerCtx<'m> {
         let tr = self.lower_type2_ref(&t1.base.node, rule_name)?;
 
         let mut constraints = Vec::new();
+        // A bare literal (`cat: "kernel"`, `version: 1`) only admits that value;
+        // keep it as an `.eq` constraint so backends and the validator can enforce it.
+        if let Type2::Value(v) = &t1.base.node {
+            if t1.ops.is_empty() {
+                constraints.push(Constraint::Eq(lower_value(v)));
+            }
+        }
         for op in &t1.ops {
             let cs = lower_type_op(op, &t1.base.node, rule_name, None, &mut self.warnings)?;
             constraints.extend(cs);
