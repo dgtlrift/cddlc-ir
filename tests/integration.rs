@@ -441,3 +441,39 @@ coap-message = {
         panic!("expected struct");
     }
 }
+
+// ── Literal-valued fields ─────────────────────────────────────────────────────
+
+#[test]
+fn test_literal_field_keeps_eq_constraint() {
+    let m = compile(r#"rec = { cat: "kernel", version: 1, t: uint }"#);
+    let Some(TypeDef::Struct(s)) = m.get("rec") else { panic!("expected struct") };
+    assert_eq!(s.fields[0].ty, TypeRef::Primitive(Primitive::Tstr));
+    assert_eq!(
+        s.fields[0].constraints,
+        vec![Constraint::Eq(cddlc_ir::LiteralValue::Text("kernel".into()))]
+    );
+    assert_eq!(s.fields[1].constraints, vec![Constraint::Eq(cddlc_ir::LiteralValue::Uint(1))]);
+    assert!(s.fields[2].constraints.is_empty());
+}
+
+#[test]
+fn test_inline_literal_choice_becomes_named_enum() {
+    let m = compile(r#"sim-end = { reason: "until" / "queue-empty" / "stopped" }"#);
+    let Some(TypeDef::Struct(s)) = m.get("sim-end") else { panic!("expected struct") };
+    assert_eq!(s.fields[0].ty, TypeRef::Named("sim-end-reason".into()));
+    let Some(TypeDef::Enum(e)) = m.get("sim-end-reason") else { panic!("expected enum") };
+    let names: Vec<&str> = e.variants.iter().map(|v| v.name.as_str()).collect();
+    assert_eq!(names, ["Until", "QueueEmpty", "Stopped"]);
+    assert_eq!(
+        e.variants[1].constraints,
+        vec![Constraint::Eq(cddlc_ir::LiteralValue::Text("queue-empty".into()))]
+    );
+}
+
+#[test]
+fn test_inline_mixed_choice_stays_choice() {
+    let m = compile("rec = { v: uint / tstr }");
+    let Some(TypeDef::Struct(s)) = m.get("rec") else { panic!("expected struct") };
+    assert!(matches!(s.fields[0].ty, TypeRef::Choice(_)));
+}
