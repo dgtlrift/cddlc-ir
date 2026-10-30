@@ -26,11 +26,54 @@ pub struct IrModule {
     /// Topologically sorted type definitions.
     /// Every [`TypeRef::Named`] points to a key present in this map.
     pub types: IndexMap<SmolStr, TypeDef>,
+
+    /// Where each type and field was written (dgtlrift/cddlc#9).
+    pub sources: Sources,
+}
+
+/// Where each type and field of a module was written, as the parser saw it
+/// (dgtlrift/cddlc#9). A type made from an inline field (`<rule>-<field>`) has that
+/// field's source.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Sources {
+    /// By type name.
+    pub types:  IndexMap<SmolStr, SourceRef>,
+    /// By type name and field name.
+    pub fields: IndexMap<(SmolStr, SmolStr), SourceRef>,
+}
+
+/// A CDDL source line: its file, its 1-based line, and its text, trimmed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceRef {
+    pub path: std::path::PathBuf,
+    pub line: usize,
+    pub text: String,
+}
+
+impl SourceRef {
+    /// `cddl: <path>:<line>: <text>`, the path relative to `base` when it is under it.
+    pub fn describe(&self, base: Option<&std::path::Path>) -> String {
+        let path = base
+            .and_then(|b| self.path.strip_prefix(b).ok())
+            .unwrap_or(&self.path);
+        format!("cddl: {}:{}: {}", path.display(), self.line, self.text)
+    }
+}
+
+impl From<&cddlc_parser::SourceLine> for SourceRef {
+    fn from(s: &cddlc_parser::SourceLine) -> Self {
+        Self { path: s.path.clone(), line: s.line, text: s.text.clone() }
+    }
 }
 
 impl IrModule {
     pub fn new(name: impl Into<SmolStr>, root: impl Into<SmolStr>) -> Self {
-        Self { name: name.into(), root: root.into(), types: IndexMap::new() }
+        Self {
+            name:    name.into(),
+            root:    root.into(),
+            types:   IndexMap::new(),
+            sources: Sources::default(),
+        }
     }
 
     pub fn insert(&mut self, name: SmolStr, def: TypeDef) {

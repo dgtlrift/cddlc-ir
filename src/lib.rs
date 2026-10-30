@@ -36,5 +36,5 @@ pub use lower::lower;
 pub use types::{
     AliasDef, ArrayDef, Capacity, CborTag, Constraint, EnumDef, EnumVariant,
     FieldDef, FieldKey, IrModule, LiteralValue, MapDef, Occurrence, Primitive,
-    StructDef, TypeDef, TypeRef,
+    SourceRef, Sources, StructDef, TypeDef, TypeRef,
 };

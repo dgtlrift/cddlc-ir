@@ -30,7 +30,7 @@ use crate::prelude::is_prelude;
 use crate::types::{
     AliasDef, ArrayDef, Capacity, CborTag, Constraint, EnumDef, EnumVariant,
     FieldDef, FieldKey, IrModule, LiteralValue, Occurrence,
-    Primitive, StructDef, TypeDef, TypeRef,
+    Primitive, Sources, StructDef, TypeDef, TypeRef,
 };
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -64,6 +64,9 @@ struct LowerCtx<'m> {
     /// Output accumulator — in definition order (topo sort applied later).
     output: IndexMap<SmolStr, TypeDef>,
 
+    /// Where each type and field was written (dgtlrift/cddlc#9).
+    sources: Sources,
+
     warnings: Vec<IrWarning>,
 }
 
@@ -80,6 +83,7 @@ impl<'m> LowerCtx<'m> {
             known_rules:  HashSet::new(),
             generics:     HashMap::new(),
             output:       IndexMap::new(),
+            sources:      Sources::default(),
             warnings:     Vec::new(),
         }
     }
@@ -130,6 +134,7 @@ impl<'m> LowerCtx<'m> {
                 ir.insert(name, def);
             }
         }
+        ir.sources = std::mem::take(&mut self.sources);
 
         Ok(LowerResult {
             module:   ir,
@@ -143,7 +148,15 @@ impl<'m> LowerCtx<'m> {
         let name: SmolStr = rule.name.node.0.clone();
 
         // Extract pragma metadata
-        let meta = PragmaMeta::from_pragmas(&rule.pragmas);
+        let mut meta = PragmaMeta::from_pragmas(&rule.pragmas);
+        // An `@doc` pragma wins; otherwise the comments written above the rule
+        // (dgtlrift/cddlc#8).
+        if meta.doc.is_none() {
+            meta.doc = rule.doc.clone();
+        }
+        if let Some(s) = &rule.source {
+            self.sources.types.insert(name.clone(), s.into());
+        }
 
         match &rule.kind {
             RuleKind::Type { ty, extend: false } => {
@@ -435,6 +448,20 @@ impl<'m> LowerCtx<'m> {
                 let (ty, constraints) = self.lower_field_type(
                     &value.node, rule_name, &field_name,
                 )?;
+                if let Some(s) = &me.source {
+                    self.sources.fields.insert(
+                        (rule_name.into(), field_name.clone()),
+                        s.into(),
+                    );
+                    // A type made from this inline field is where the field is.
+                    if let TypeRef::Named(n) = &ty {
+                        if !self.sources.types.contains_key(n)
+                            && n.starts_with(&format!("{rule_name}-{field_name}"))
+                        {
+                            self.sources.types.insert(n.clone(), s.into());
+                        }
+                    }
+                }
 
                 Ok(FieldDef {
                     name:        field_name,
@@ -443,7 +470,7 @@ impl<'m> LowerCtx<'m> {
                     occurrence,
                     constraints,
                     default:     None,
-                    doc:         None,
+                    doc:         me.doc.clone(),
                     deprecated:  false,
                 })
             }
@@ -456,6 +483,12 @@ impl<'m> LowerCtx<'m> {
                     TypeRef::Primitive(p) => format!("{p:?}").to_lowercase().into(),
                     _ => "value".into(),
                 };
+                if let Some(s) = &me.source {
+                    self.sources.fields.insert(
+                        (rule_name.into(), field_name.clone()),
+                        s.into(),
+                    );
+                }
                 Ok(FieldDef {
                     name:        field_name,
                     key:         FieldKey::Text("value".into()),
@@ -463,7 +496,7 @@ impl<'m> LowerCtx<'m> {
                     occurrence,
                     constraints,
                     default:     None,
-                    doc:         None,
+                    doc:         me.doc.clone(),
                     deprecated:  false,
                 })
             }
@@ -785,7 +818,13 @@ impl<'m> LowerCtx<'m> {
                     }
                 };
                 Spanned::new(
-                    MemberEntry { kind: new_kind, occurrence: me.occurrence.clone(), pragmas: me.pragmas.clone() },
+                    MemberEntry {
+                        kind:       new_kind,
+                        occurrence: me.occurrence.clone(),
+                        pragmas:    me.pragmas.clone(),
+                        doc:        me.doc.clone(),
+                        source:     me.source.clone(),
+                    },
                     e.span,
                 )
             }).collect();
