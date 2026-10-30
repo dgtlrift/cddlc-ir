@@ -890,6 +890,33 @@ impl<'m> LowerCtx<'m> {
         rule_name:  &str,
         field_name: &str,
     ) -> Result<(TypeRef, Vec<Constraint>), IrError> {
+        // An inline array or map (`names: [* tstr]`, `pos: { x: int, y: int }`) becomes a
+        // synthesized named type (`<rule>-<field>`), lowered as a rule of that shape would
+        // be. Lowered through `lower_type_to_ref` it would be `Primitive::Any`, which the
+        // backends emit as bytes (dgtlrift/cddlc#6).
+        let inline = match ty.choices.as_slice() {
+            [only] if only.node.ops.is_empty() => match &only.node.base.node {
+                Type2::Array(group) => Some((true, group)),
+                Type2::Map(group) => Some((false, group)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((is_array, group)) = inline {
+            let mut name: SmolStr = format!("{rule_name}-{field_name}").into();
+            while self.output.contains_key(&name) || self.known_rules.contains(&name) {
+                name = format!("{name}-type").into();
+            }
+            self.known_rules.insert(name.clone());
+            let meta = PragmaMeta::default();
+            let def = if is_array {
+                self.lower_array_type(&name, &group.node.choices, &meta)?
+            } else {
+                self.lower_map_as_struct(&name, &group.node.choices, &meta)?
+            };
+            self.output.insert(name.clone(), def);
+            return Ok((TypeRef::Named(name), vec![]));
+        }
         let all_literals = ty.choices.len() > 1
             && ty.choices.iter().all(|c| {
                 c.node.ops.is_empty()
