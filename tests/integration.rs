@@ -477,3 +477,47 @@ fn test_inline_mixed_choice_stays_choice() {
     let Some(TypeDef::Struct(s)) = m.get("rec") else { panic!("expected struct") };
     assert!(matches!(s.fields[0].ty, TypeRef::Choice(_)));
 }
+
+// ── Inline array and map field types (dgtlrift/cddlc#6) ──────────────────────
+
+/// An inline array or map as a field's type is its own synthesized type, `<rule>-<field>`,
+/// as a named rule of that shape would be, not `Any` (which backends emit as bytes).
+#[test]
+fn test_inline_array_and_map_fields() {
+    let m = compile(
+        "r = { names: [* tstr], counts: [* uint], pos: { x: int, y: int }, named: list }\n\
+         list = [* tstr]",
+    );
+    let Some(TypeDef::Struct(r)) = m.get("r") else {
+        panic!("expected struct r");
+    };
+    let ty = |field: &str| r.fields.iter().find(|f| f.name == field).unwrap().ty.clone();
+    assert_eq!(ty("names"), TypeRef::Named("r-names".into()));
+    assert_eq!(ty("counts"), TypeRef::Named("r-counts".into()));
+    assert_eq!(ty("pos"), TypeRef::Named("r-pos".into()));
+    assert_eq!(ty("named"), TypeRef::Named("list".into()));
+    let Some(TypeDef::Array(a)) = m.get("r-names") else {
+        panic!("expected array r-names");
+    };
+    assert_eq!(a.element, TypeRef::Primitive(Primitive::Tstr));
+    let Some(TypeDef::Array(a)) = m.get("r-counts") else {
+        panic!("expected array r-counts");
+    };
+    assert_eq!(a.element, TypeRef::Primitive(Primitive::Uint));
+    let Some(TypeDef::Struct(p)) = m.get("r-pos") else {
+        panic!("expected struct r-pos");
+    };
+    assert_eq!(p.fields.len(), 2);
+}
+
+/// A synthesized name that a rule already has gets a suffix.
+#[test]
+fn test_inline_field_type_name_clash() {
+    let m = compile("r = { names: [* tstr] }\nr-names = uint");
+    let Some(TypeDef::Struct(r)) = m.get("r") else {
+        panic!("expected struct r");
+    };
+    assert_eq!(r.fields[0].ty, TypeRef::Named("r-names-type".into()));
+    assert!(matches!(m.get("r-names"), Some(TypeDef::Alias(_))));
+    assert!(matches!(m.get("r-names-type"), Some(TypeDef::Array(_))));
+}
